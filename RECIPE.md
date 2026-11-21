@@ -98,7 +98,8 @@ The sidebar's Agents block, top to bottom:
 - **Optional, for Interrupted**: the claude-restore hooks in `extras/claude-restore/`
   (SessionStart/SessionEnd hooks write and clear `~/.local/state/claude-restore/sessions/
   <id>.json` with the terminal, folder and space; a background mod resumes them when the
-  window opens). Without them there is no Interrupted section; the rest works.
+  window opens. It draws nothing and sits in the layout's `floating` list, so it takes no
+  space). Without them there is no Interrupted section; the rest works.
 - **Art**: Herdr's `mods/workspace-chrome/` icons (`archive.svg`, `x.svg`, chevrons).
 
 ## Watch out

@@ -63,6 +63,14 @@ and in `~/.claude/settings.json`:
 }
 ```
 
+The background mod draws nothing, but Herdr only runs a mod that's in the layout. Add it
+to your layout's `floating` list, where an empty mod takes no space (a normal block would
+leave an empty panel):
+
+```json
+"floating": [{ "id": "claude-restore", "content": { "mod": "claude-restore" }, "edge": "bottom", "align": "start" }]
+```
+
 Do the same on each connected machine whose sessions you want restored.
 
 ## Tests
@@ -85,3 +93,7 @@ tests/                 test set and runner
 RECIPE.md              the brief to rebuild it from scratch (Herdr's sharing format)
 preview.png            screenshot
 ```
+
+## License
+
+[MIT](LICENSE)
