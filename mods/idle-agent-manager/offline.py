@@ -4,7 +4,11 @@
 #   list            prints {"sessions": [...]} as JSON. Reads only (plus a cache file).
 #   delete <id>     removes everything Claude Code keeps for that session on this machine
 #                   (see delete() below) and its restore record.
-import glob, json, os, re, shutil, subprocess, sys, time
+#   forget <record> drops a restore record that has no session id.
+#   restore [--dry] resumes cut-off sessions in their terminals (the mod runs it once per
+#                   machine after the window opens).
+#   track start|end the Claude Code SessionStart/SessionEnd hook that writes the records.
+import glob, json, os, re, shlex, shutil, subprocess, sys, time
 
 HOME = os.path.expanduser("~")
 CLAUDE = os.path.join(HOME, ".claude")
@@ -327,6 +331,90 @@ def drop_history(sid):
     return 0
 
 
+def hc_send(term, text):
+    exe = shutil.which("hc") or os.path.join(HOME, ".local/bin/hc")
+    try:
+        r = subprocess.run([exe, "send", term, text], capture_output=True, text=True, timeout=10)
+        return r.returncode == 0, r.stderr.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+
+
+def restore(dry=False):
+    # After a reboot or crash, Herdr brings terminals back as idle shells. For each restore
+    # record whose terminal is an idle shell again, type `claude --resume <id>` there (or
+    # `claude --continue` for a record without an id) and drop the record. Anything else
+    # (Claude already up, terminal busy or gone, folder missing) keeps its record, so the
+    # session stays in Interrupted.
+    by_term = {}
+    for rp in glob.glob(os.path.join(RECORDS, "*.json")):
+        r = load(rp)
+        if isinstance(r, dict) and r.get("terminal"):
+            by_term.setdefault(r["terminal"], []).append((rp, r))
+    done, kept = [], []
+    for term, group in sorted(by_term.items()):
+        info = hc_get(term)
+        fg = (info or {}).get("foreground") or {}
+        if info is None:
+            kept.append({"terminal": term, "reason": "terminal gone"})
+            continue
+        if fg.get("name") == "claude":
+            kept.append({"terminal": term, "reason": "claude running"})
+            continue
+        if fg.get("name") not in SHELLS or info.get("state") != "live":
+            kept.append({"terminal": term, "reason": f"busy ({fg.get('name')})"})
+            continue
+        rp, newest = max(group, key=lambda g: g[1].get("started", 0))
+        cwd = newest.get("cwd") or info.get("cwd") or HOME
+        if not os.path.isdir(cwd):
+            kept.append({"terminal": term, "reason": "folder missing"})
+            continue
+        sid = newest.get("session_id") or ""
+        cmd = f"cd {shlex.quote(cwd)} && " + (f"claude --resume {sid}" if UUID.match(sid) else "claude --continue")
+        if not dry:
+            ok, err = hc_send(term, cmd)
+            if not ok:
+                kept.append({"terminal": term, "reason": f"send failed: {err}"})
+                continue
+            for p, _ in group:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        done.append({"terminal": term, "session": sid, "cwd": cwd})
+    print(json.dumps({"restored": done, "kept": kept, "dry": dry}))
+
+
+def track(action):
+    # Claude Code SessionStart/SessionEnd hook: SessionStart records which Herdr terminal
+    # runs the session; a clean SessionEnd drops it. A record left behind means the session
+    # was cut off. Never fails and prints nothing, so it can't disturb Claude Code.
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+        sid = data.get("session_id") or ""
+        term = os.environ.get("HC_TERMINAL_ID", "")
+        if not sid or not term:
+            return
+        os.makedirs(RECORDS, exist_ok=True)
+        # A terminal runs one Claude at a time: drop any record for it.
+        for p in glob.glob(os.path.join(RECORDS, "*.json")):
+            if (load(p) or {}).get("terminal") == term:
+                os.remove(p)
+        if action == "start":
+            info = hc_get(term) or {}
+            entry = {
+                "session_id": sid,
+                "terminal": term,
+                "cwd": data.get("cwd") or os.getcwd(),
+                "started": int(time.time()),
+                "space": (info.get("labels") or {}).get("herdr.space", ""),
+            }
+            with open(os.path.join(RECORDS, sid + ".json"), "w") as f:
+                json.dump(entry, f)
+    except Exception:
+        pass
+
+
 def forget(record):
     # A restore record without a session id (backfilled): drop the record only.
     if not re.match(r"^[\w.-]+$", record):
@@ -345,5 +433,9 @@ if __name__ == "__main__":
         delete(sys.argv[2])
     elif cmd == "forget" and len(sys.argv) > 2:
         forget(sys.argv[2])
+    elif cmd == "restore":
+        restore(dry="--dry" in sys.argv[2:])
+    elif cmd == "track" and len(sys.argv) > 2:
+        track(sys.argv[2])
     else:
-        raise SystemExit("usage: offline.py list | delete <session-id> | forget <record>")
+        raise SystemExit("usage: offline.py list | delete <session-id> | forget <record> | restore [--dry] | track start|end")

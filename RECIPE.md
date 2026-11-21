@@ -44,6 +44,13 @@ The sidebar's Agents block, top to bottom:
   else in the current space if it's on the session's machine, else in another space on that
   machine, else in a new space there. The list refreshes 5 s later.
 - **Click** a Remote row: opens `https://claude.ai/code/<id>` in the browser.
+- **Restore at start**: once per machine per app run (the first time the machine answers,
+  remembered on `globalThis` so saving the mod doesn't repeat it), before listing it, the mod
+  runs `offline.py restore`. For each terminal with restore records that came back as an
+  idle shell (`zsh`, `bash`, `fish`, `sh`, `dash`, state `live`), it types
+  `cd <folder> && claude --resume <id>` with `hc send` (the newest record of that terminal
+  wins) and drops its records. A terminal already running Claude, busy, gone, or whose
+  folder is missing keeps its records, so the session shows in Interrupted.
 - **Hover** a row: `×` hides it (remembered in this mod's localStorage, `offHidden`).
   Closed and Interrupted rows also get **Delete** (**Forget** for a record without an id):
   the first click turns it into `Confirm delete` in `blocked` color for 3 s; a second click
@@ -78,8 +85,9 @@ The sidebar's Agents block, top to bottom:
 - **Layout**: the layout's `agents` block points to `{ "mod": "idle-agent-manager" }`. Herdr's
   own `main` layout can't be edited; clone it first (`layout.clone`).
 - **`mods/idle-agent-manager/`**, a `mod.clone` of Herdr's `agents` (0.1.16):
-  - `main.js` — the shipped mod plus: `refreshOffline` (runs `offline.py list` on this
-    computer and each machine from `machines()` not `unavailable`, with
+  - `main.js` — the shipped mod plus: `refreshOffline` (runs `offline.py restore` once and
+    then `offline.py list` on this computer and each machine from `machines()` not
+    `unavailable`, with
     `exec("python3", ["-I", "-c", source, "list"], { on, timeout: 60000 })`; the source is
     read once with `readTextFile(appHome() + "/mods/idle-agent-manager/offline.py")`, so nothing
     is installed on other machines), `refreshCloud` (runs `claude_ai.py list` locally),
@@ -87,7 +95,8 @@ The sidebar's Agents block, top to bottom:
     {space, folder, argv}` or `space.new {machine, folder, argv}`), `offlineRow` /
     `remoteRow`, and the Offline headers built with the shipped `header()`. Uses `exec`,
     `readTextFile`, `appHome`, `machines`, `spaces`, `focused`, `run`, `notify`, `checking`.
-  - `offline.py` — `list`, `delete <id>`, `forget <record>`. Reads `~/.claude/projects`,
+  - `offline.py` — `list`, `delete <id>`, `forget <record>`, `restore [--dry]`, and
+    `track start|end`, the Claude Code hook. Reads `~/.claude/projects`,
     `~/.claude/sessions`, `~/.claude/jobs`, the restore records, and `hc get <t> --json`.
     Caches per-transcript facts in `~/.cache/claude-offline/meta.json` (keyed by mtime and
     size), so a list costs about 0.1 s after the first.
@@ -95,11 +104,12 @@ The sidebar's Agents block, top to bottom:
     `https://api.anthropic.com/v1/code/sessions` (100 a page, up to 10 pages, following
     `next_cursor`) with Claude Code's login from `~/.claude/.credentials.json` and the
     organization from `~/.claude.json`. Read-only.
-- **Optional, for Interrupted**: the claude-restore hooks in `extras/claude-restore/`
-  (SessionStart/SessionEnd hooks write and clear `~/.local/state/claude-restore/sessions/
-  <id>.json` with the terminal, folder and space; a background mod resumes them when the
-  window opens. It draws nothing and sits in the layout's `floating` list, so it takes no
-  space). Without them there is no Interrupted section; the rest works.
+- **Optional, for restoring and Interrupted**: Claude Code `SessionStart` / `SessionEnd`
+  hooks running `python3 -I <path>/offline.py track start|end`. They write and clear
+  `~/.local/state/claude-restore/sessions/<id>.json` with the terminal (`HC_TERMINAL_ID`),
+  folder and space; a record left behind means the session was cut off. On another machine
+  the hooks point at a copy of `offline.py` there. Without them nothing is restored and
+  there is no Interrupted section; the rest works.
 - **Art**: Herdr's `mods/workspace-chrome/` icons (`archive.svg`, `x.svg`, chevrons).
 
 ## Watch out
@@ -116,7 +126,10 @@ The sidebar's Agents block, top to bottom:
 - `offline.py` is passed with `-c`; keep it self-contained (no imports from its folder).
 - Running detection reads `/proc/<pid>/stat` (Linux). Without `/proc` it only checks that
   the pid exists, so a reused pid can make a session look running.
-- `herdr-app check` runs `init()` for real: both refreshes return early when `checking()`.
+- `herdr-app check` runs `init()` for real: both refreshes (and so the restore) return early
+  when `checking()`.
+- The hooks point at the mod's folder: renaming the mod silently stops the records (the hook
+  never fails, so Claude Code doesn't complain).
 - A restore record without a session id (written for sessions that were already running
   when the hooks were set up) resumes with `claude --continue`, which picks the folder's
   newest session.
@@ -133,6 +146,9 @@ The sidebar's Agents block, top to bottom:
   a tab running `claude --resume <id>` in its folder, and the row goes away.
 - A session in a terminal that loses Claude (kill the claude process) shows in Interrupted
   with `⚠`, its terminal id and `waiting to restore`.
+- With the hooks: kill the Claude process in a terminal, then reopen the window (or run
+  `offline.py restore`): the terminal gets `claude --resume <id>` typed into it and the row
+  leaves Interrupted.
 - Hover a row: `×` hides it and it stays hidden after a restart; Delete needs a second click
   within 3 s, then the transcript and its files are gone (`ls ~/.claude/projects/*/<id>*`).
 - Remote lists the claude.ai sessions that `claude_ai.py list` returns minus those with a

@@ -7,7 +7,7 @@ group for Claude Code sessions that aren't running.
 
 | Section | What's in it | Click | Hover |
 |---|---|---|---|
-| **Interrupted** ⚠ | Sessions cut off by a reboot, crash or closed window (needs the claude-restore hooks) | Resume in a new tab, in its old space | Hide · Delete |
+| **Interrupted** ⚠ | Sessions cut off by a reboot, crash or closed window that couldn't be resumed by themselves (needs the hooks below) | Resume in a new tab, in its old space | Hide · Delete |
 | **Closed** | Every other session on this computer and on Herdr's connected machines | Resume in a new tab | Hide · Delete |
 | **Remote** ☁ | Sessions on claude.ai with no copy on any machine | Open on claude.ai | Hide |
 
@@ -19,13 +19,16 @@ that has a copy. See [RECIPE.md](RECIPE.md) for every detail.
 ## What it touches
 
 - **Runs programs**: `python3` (its own two scripts) here and, through herdr-core, on
-  connected machines; `hc get`; `xdg-open` / `explorer.exe` to open claude.ai links.
+  connected machines; `hc get`; `hc send` to type `claude --resume <id>` into a terminal
+  whose session was cut off (only with the hooks below); `xdg-open` / `explorer.exe` to
+  open claude.ai links.
 - **Reads** outside its folder: `~/.claude/` (transcripts, session and job files, history),
-  the claude-restore records, and **Claude Code's login** (`~/.claude/.credentials.json`) to
+  the restore records, and **Claude Code's login** (`~/.claude/.credentials.json`) to
   list your claude.ai sessions.
 - **Network**: `GET https://api.anthropic.com/v1/code/sessions` only. That endpoint isn't
   documented; it's the one Claude Code uses, and may change.
-- **Writes**: a cache in `~/.cache/claude-offline/`; and, only when you confirm a Delete,
+- **Writes**: a cache in `~/.cache/claude-offline/`; restore records in
+  `~/.local/state/claude-restore/sessions/` (the hooks); and, only when you confirm a Delete,
   removes that session's files and rewrites `~/.claude/history.jsonl` without its lines.
 
 ## Install
@@ -44,34 +47,28 @@ herdr-app do layout.clone '{"name":"main","as":"my-layout"}'
 #   "content": { "mod": "idle-agent-manager" }
 ```
 
-### Optional: Interrupted sessions (claude-restore)
+### Optional: restore sessions after a reboot or crash
 
-`extras/claude-restore/` has the hooks that record which terminal runs which Claude session,
-and a background mod that resumes them when the window opens:
-
-```sh
-cp extras/claude-restore/hooks/*.sh ~/.claude/hooks/
-cp -r extras/claude-restore/mod ~/.config/herdr-app/mods/claude-restore
-```
-
-and in `~/.claude/settings.json`:
+Add two Claude Code hooks so the mod knows which terminal runs which session. In
+`~/.claude/settings.json`:
 
 ```json
 "hooks": {
-  "SessionStart": [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/hooks/claude-restore-track.sh start", "timeout": 10 }] }],
-  "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "bash ~/.claude/hooks/claude-restore-track.sh end", "timeout": 10 }] }]
+  "SessionStart": [{ "hooks": [{ "type": "command", "command": "python3 -I \"$HOME/.config/herdr-app/mods/idle-agent-manager/offline.py\" track start", "timeout": 10 }] }],
+  "SessionEnd":   [{ "hooks": [{ "type": "command", "command": "python3 -I \"$HOME/.config/herdr-app/mods/idle-agent-manager/offline.py\" track end", "timeout": 10 }] }]
 }
 ```
 
-The background mod draws nothing, but Herdr only runs a mod that's in the layout. Add it
-to your layout's `floating` list, where an empty mod takes no space (a normal block would
-leave an empty panel):
+When the window opens, the mod then types `claude --resume <id>` into every Herdr terminal
+whose session was cut off and that came back as an idle shell, on this computer and on each
+connected machine (once per machine, the first time it answers). Sessions it can't resume
+that way show in **Interrupted**.
 
-```json
-"floating": [{ "id": "claude-restore", "content": { "mod": "claude-restore" }, "edge": "bottom", "align": "start" }]
-```
+On a connected machine, copy `offline.py` anywhere there (say
+`~/.local/share/idle-agent-manager/offline.py`) and add the same hooks with that path. The
+mod itself installs nothing on other machines.
 
-Do the same on each connected machine whose sessions you want restored.
+Without the hooks there's no Interrupted section and nothing is restored; the rest works.
 
 ## Tests
 
@@ -87,10 +84,9 @@ rows) is covered only by `herdr-app check` loading it, not by unit tests.
 ## Layout
 
 ```
-mods/idle-agent-manager/   the mod (main.js, mod.json, offline.py, claude_ai.py)
-extras/claude-restore/ optional hooks + background mod for Interrupted
-tests/                 test set and runner
-RECIPE.md              the brief to rebuild it from scratch (Herdr's sharing format)
+mods/idle-agent-manager/  the mod (main.js, mod.json, offline.py, claude_ai.py)
+tests/                    test set and runner
+RECIPE.md                 the brief to rebuild it from scratch (Herdr's sharing format)
 preview.png            screenshot
 ```
 

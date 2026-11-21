@@ -43,14 +43,19 @@ class FakeHome:
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def write_hc(self):
-        # A fake `hc get <t> --json` answering from terminals.json; unknown terminals fail.
+        # A fake `hc get <t> --json` answering from terminals.json (unknown terminals fail),
+        # and `hc send <t> <text>` appending to sent.json.
         path = os.path.join(self.bin, "hc")
         with open(path, "w") as f:
             f.write(f"""#!{sys.executable}
-import json, sys
+import json, os, sys
 t = json.load(open({json.dumps(os.path.join(self.dir, "terminals.json"))}))
 if len(sys.argv) > 2 and sys.argv[1] == "get" and sys.argv[2] in t:
     print(json.dumps(t[sys.argv[2]])); sys.exit(0)
+if len(sys.argv) > 3 and sys.argv[1] == "send" and sys.argv[2] in t:
+    with open({json.dumps(os.path.join(self.dir, "sent.json"))}, "a") as f:
+        f.write(json.dumps([sys.argv[2], sys.argv[3]]) + "\\n")
+    sys.exit(0)
 sys.exit(1)
 """)
         os.chmod(path, 0o755)
@@ -76,10 +81,20 @@ sys.exit(1)
         with open(os.path.join(self.records, name + ".json"), "w") as f:
             json.dump(e, f)
 
-    def run(self, *args):
-        env = {"HOME": self.home, "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""), "CLAUDE_OFFLINE_TMP": self.tmproot}
-        r = subprocess.run([sys.executable, "-I", "-c", SRC, *args], capture_output=True, text=True, env=env, timeout=60)
+    def run(self, *args, stdin="", env=None):
+        env = {"HOME": self.home, "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""), "CLAUDE_OFFLINE_TMP": self.tmproot, **(env or {})}
+        r = subprocess.run([sys.executable, "-I", "-c", SRC, *args], input=stdin, capture_output=True, text=True, env=env, timeout=60)
         return r
+
+    def sent(self):
+        try:
+            with open(os.path.join(self.dir, "sent.json")) as f:
+                return [json.loads(l) for l in f]
+        except OSError:
+            return []
+
+    def records_left(self):
+        return sorted(n[:-5] for n in os.listdir(self.records))
 
 
 class ListTests(unittest.TestCase):
@@ -300,6 +315,104 @@ class ForgetTests(unittest.TestCase):
 
     def test_forget_rejects_paths(self):
         self.assertNotEqual(self.h.run("forget", "../x").returncode, 0)
+
+
+class RestoreTests(unittest.TestCase):
+    def setUp(self):
+        self.h = FakeHome()
+
+    def tearDown(self):
+        self.h.close()
+
+    def restore(self, *args):
+        r = self.h.run("restore", *args)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_idle_shell_gets_resume_and_record_is_dropped(self):
+        h = self.h
+        h.terminal("t1", "zsh")
+        h.record(E, session_id=E, terminal="t1", cwd=h.cwd, started=1)
+        out = self.restore()
+        self.assertEqual([d["terminal"] for d in out["restored"]], ["t1"])
+        self.assertEqual(h.sent(), [["t1", f"cd {h.cwd} && claude --resume {E}"]])
+        self.assertEqual(h.records_left(), [])
+
+    def test_record_without_id_uses_continue(self):
+        h = self.h
+        h.terminal("t3", "bash")
+        h.record("backfill-t3", session_id="backfill-t3", terminal="t3", cwd=h.cwd)
+        self.restore()
+        self.assertEqual(h.sent(), [["t3", f"cd {h.cwd} && claude --continue"]])
+
+    def test_newest_record_of_a_terminal_wins_and_all_are_dropped(self):
+        h = self.h
+        h.terminal("t1", "zsh")
+        h.record(A, session_id=A, terminal="t1", cwd=h.cwd, started=1)
+        h.record(E, session_id=E, terminal="t1", cwd=h.cwd, started=2)
+        self.restore()
+        self.assertEqual(h.sent(), [["t1", f"cd {h.cwd} && claude --resume {E}"]])
+        self.assertEqual(h.records_left(), [])
+
+    def test_records_kept_when_it_cannot_restore(self):
+        h = self.h
+        h.terminal("t1", "claude")
+        h.terminal("t2", "vim")
+        h.terminal("t4", "zsh")
+        h.record(A, session_id=A, terminal="t1", cwd=h.cwd)
+        h.record(C, session_id=C, terminal="t2", cwd=h.cwd)
+        h.record(D, session_id=D, terminal="t9", cwd=h.cwd)  # terminal gone
+        h.record(E, session_id=E, terminal="t4", cwd=os.path.join(h.dir, "missing"))
+        out = self.restore()
+        self.assertEqual(out["restored"], [])
+        self.assertEqual({k["terminal"]: k["reason"] for k in out["kept"]},
+                         {"t1": "claude running", "t2": "busy (vim)", "t9": "terminal gone", "t4": "folder missing"})
+        self.assertEqual(h.sent(), [])
+        self.assertEqual(h.records_left(), sorted([A, C, D, E]))
+
+    def test_dry_run_changes_nothing(self):
+        h = self.h
+        h.terminal("t1", "zsh")
+        h.record(E, session_id=E, terminal="t1", cwd=h.cwd)
+        out = self.restore("--dry")
+        self.assertEqual(len(out["restored"]), 1)
+        self.assertEqual(h.sent(), [])
+        self.assertEqual(h.records_left(), [E])
+
+
+class TrackTests(unittest.TestCase):
+    def setUp(self):
+        self.h = FakeHome()
+        self.h.terminal("t1", "claude", space="sp7")
+
+    def tearDown(self):
+        self.h.close()
+
+    def track(self, action, sid, term="t1"):
+        env = {"HC_TERMINAL_ID": term} if term else {}
+        r = self.h.run("track", action, stdin=json.dumps({"session_id": sid, "cwd": self.h.cwd}), env=env)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
+
+    def test_start_writes_a_record_with_terminal_folder_and_space(self):
+        self.track("start", A)
+        with open(os.path.join(self.h.records, A + ".json")) as f:
+            rec = json.load(f)
+        self.assertEqual((rec["session_id"], rec["terminal"], rec["cwd"], rec["space"]), (A, "t1", self.h.cwd, "sp7"))
+
+    def test_start_replaces_the_terminals_old_record_and_end_clears_it(self):
+        self.track("start", A)
+        self.track("start", E)
+        self.assertEqual(self.h.records_left(), [E])
+        self.track("end", E)
+        self.assertEqual(self.h.records_left(), [])
+
+    def test_outside_herdr_does_nothing(self):
+        self.track("start", A, term=None)
+        self.assertEqual(self.h.records_left(), [])
+
+    def test_bad_input_is_ignored(self):
+        r = self.h.run("track", "start", stdin="not json", env={"HC_TERMINAL_ID": "t1"})
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
 
 
 if __name__ == "__main__":

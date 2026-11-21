@@ -206,8 +206,15 @@ export default class Agents extends View {
         this.src ??= await readTextFile(`${appHome()}/${SCRIPT}`);
         if (!this.src) return;
         const names = [null, ...machines().filter((m) => m.name && m.layout !== "unavailable").map((m) => m.name)];
+        // Restore cut-off sessions once per machine per app run, the first time it answers.
+        // Kept on globalThis so saving the mod (which re-runs init) doesn't restore again.
+        const restored = (globalThis.__idleAgentRestored ??= new Set());
         await Promise.all(names.map(async (on) => {
           try {
+            if (!restored.has(on ?? "")) {
+              const r = await exec("python3", ["-I", "-c", this.src, "restore"], { on, timeout: 60000 });
+              if (r.code === 0) restored.add(on ?? "");
+            }
             const r = await exec("python3", ["-I", "-c", this.src, "list"], { on, timeout: 60000 });
             if (r.code !== 0) return;
             const d = JSON.parse(r.stdout);
