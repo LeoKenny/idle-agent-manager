@@ -333,8 +333,11 @@ def drop_history(sid):
 
 def hc_send(term, text):
     exe = shutil.which("hc") or os.path.join(HOME, ".local/bin/hc")
+    # Sent from inside a Herdr terminal, hc wraps the text in <hc from="tN"> as a message
+    # between agents, which a shell can't run. Send it as plain typing.
+    env = {k: v for k, v in os.environ.items() if k != "HC_TERMINAL_ID"}
     try:
-        r = subprocess.run([exe, "send", term, text], capture_output=True, text=True, timeout=10)
+        r = subprocess.run([exe, "send", term, text], capture_output=True, text=True, timeout=10, env=env)
         return r.returncode == 0, r.stderr.strip()
     except (OSError, subprocess.SubprocessError) as e:
         return False, str(e)

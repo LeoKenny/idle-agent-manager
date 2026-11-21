@@ -53,8 +53,11 @@ t = json.load(open({json.dumps(os.path.join(self.dir, "terminals.json"))}))
 if len(sys.argv) > 2 and sys.argv[1] == "get" and sys.argv[2] in t:
     print(json.dumps(t[sys.argv[2]])); sys.exit(0)
 if len(sys.argv) > 3 and sys.argv[1] == "send" and sys.argv[2] in t:
+    text = sys.argv[3]
+    if os.environ.get("HC_TERMINAL_ID"):  # like hc: a message from another terminal
+        text = '<hc from="' + os.environ["HC_TERMINAL_ID"] + '">' + text + "</hc>"
     with open({json.dumps(os.path.join(self.dir, "sent.json"))}, "a") as f:
-        f.write(json.dumps([sys.argv[2], sys.argv[3]]) + "\\n")
+        f.write(json.dumps([sys.argv[2], text]) + "\\n")
     sys.exit(0)
 sys.exit(1)
 """)
@@ -337,6 +340,14 @@ class RestoreTests(unittest.TestCase):
         self.assertEqual([d["terminal"] for d in out["restored"]], ["t1"])
         self.assertEqual(h.sent(), [["t1", f"cd {h.cwd} && claude --resume {E}"]])
         self.assertEqual(h.records_left(), [])
+
+    def test_run_from_inside_a_herdr_terminal_still_types_plain_text(self):
+        h = self.h
+        h.terminal("t1", "zsh")
+        h.record(E, session_id=E, terminal="t1", cwd=h.cwd)
+        r = h.run("restore", env={"HC_TERMINAL_ID": "t10"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(h.sent(), [["t1", f"cd {h.cwd} && claude --resume {E}"]])
 
     def test_record_without_id_uses_continue(self):
         h = self.h
